@@ -40,30 +40,33 @@ au atins deja stopul sau ținta după breakout ies din listă; restul se
 recalculează la prețul de acum.
 
 ```bash
-python3 crypto-trader/crypto.py top             # top 5 de acum
-python3 crypto-trader/crypto.py top --pick 1    # opțiunea 1 devine plan + ordin
-python3 crypto-trader/crypto.py risk && python3 crypto-trader/crypto.py ticket
+python3 .claude/skills/crypto-trader/crypto.py top             # top 5 de acum
+python3 .claude/skills/crypto-trader/crypto.py top --pick 1    # opțiunea 1 devine plan + ordin
+python3 .claude/skills/crypto-trader/crypto.py risk && python3 .claude/skills/crypto-trader/crypto.py ticket
 ``` Toți pașii folosesc același motor,
-`crypto-trader/crypto.py`.
+`.claude/skills/crypto-trader/crypto.py`.
 
 ```bash
-python3 crypto-trader/crypto.py init            # crypto/config.json cu valorile implicite
-python3 crypto-trader/crypto.py coins list      # set | add | remove
-python3 crypto-trader/crypto.py scan            # sau: scan daily
-python3 crypto-trader/crypto.py entry BTC
-python3 crypto-trader/crypto.py exit --stop or-mid --target 2R --write
-python3 crypto-trader/crypto.py tm
-python3 crypto-trader/crypto.py budget --write
-python3 crypto-trader/crypto.py risk
-python3 crypto-trader/crypto.py ticket          # placed --index 1 --price P | closed --coin BTC --price P | log
-python3 crypto-trader/crypto.py alerts
-python3 crypto-trader/crypto.py config budget=100 leverage=10   # vezi sau schimbă limitele
+python3 .claude/skills/crypto-trader/crypto.py init            # crypto/config.json cu valorile implicite
+python3 .claude/skills/crypto-trader/crypto.py coins list      # set | add | remove
+python3 .claude/skills/crypto-trader/crypto.py scan            # sau: scan daily
+python3 .claude/skills/crypto-trader/crypto.py entry BTC
+python3 .claude/skills/crypto-trader/crypto.py exit --stop or-mid --target 2R --write
+python3 .claude/skills/crypto-trader/crypto.py tm
+python3 .claude/skills/crypto-trader/crypto.py budget --write
+python3 .claude/skills/crypto-trader/crypto.py risk
+python3 .claude/skills/crypto-trader/crypto.py ticket          # placed --index 1 --price P | closed --coin BTC --price P | log
+python3 .claude/skills/crypto-trader/crypto.py alerts
+python3 .claude/skills/crypto-trader/crypto.py config budget=100 leverage=10   # vezi sau schimbă limitele
 ```
 
 `--now "2026-10-22 01:45"` (UTC, pus înaintea comenzii) fixează ceasul, ca să
 reiei o zi trecută pe date reale.
 
 ### Setările (`crypto/config.json`)
+
+Fișierul e în depozit, cu limitele tale; `config key=valoare` le schimbă.
+Planurile, ordinele și jurnalul rămân doar local (ignorate de git).
 
 | cheie | implicit | ce înseamnă |
 | --- | --- | --- |
@@ -95,14 +98,14 @@ declanșat de 38 de ori (13 ținte, 25 stopuri). Cu $1.000 și levier 2x:
 `/hl-analyst` analizează orice monedă de pe Hyperliquid, doar în citire:
 
 ```bash
-python3 hl-analyst/hl.py scan                   # doar monedele din lista ta
-python3 hl-analyst/hl.py coins set BTC ETH SOL
-python3 hl-analyst/hl.py snapshot               # preț, funding, open interest
-python3 hl-analyst/hl.py ta --interval 4h       # EMA, RSI, MACD, ATR, pivoți
-python3 hl-analyst/hl.py funding --days 7
-python3 hl-analyst/hl.py book
-python3 hl-analyst/hl.py wallet 0xADRESA        # pozițiile publice ale unui portofel
-python3 hl-analyst/hl.py sim --side long --entry 81800 --stop 80800 --target 83800 --lev 10
+python3 .claude/skills/hl-analyst/hl.py scan                   # doar monedele din lista ta
+python3 .claude/skills/hl-analyst/hl.py coins set BTC ETH SOL
+python3 .claude/skills/hl-analyst/hl.py snapshot               # preț, funding, open interest
+python3 .claude/skills/hl-analyst/hl.py ta --interval 4h       # EMA, RSI, MACD, ATR, pivoți
+python3 .claude/skills/hl-analyst/hl.py funding --days 7
+python3 .claude/skills/hl-analyst/hl.py book
+python3 .claude/skills/hl-analyst/hl.py wallet 0xADRESA        # pozițiile publice ale unui portofel
+python3 .claude/skills/hl-analyst/hl.py sim --side long --entry 81800 --stop 80800 --target 83800 --lev 10
 ```
 
 ## Instalare
@@ -115,11 +118,13 @@ Ca plugin, în Claude Code:
 ```
 
 Ca plugin, comenzile apar cu prefix: `/hyperliquid-skills:crypto-scanner`.
-Pentru comenzi simple (`/crypto-scanner`), copiază folderele:
+Într-o sesiune Claude Code deschisă în acest depozit, comenzile `/crypto-*` apar
+singure (skill-urile sunt în `.claude/skills/`). Pentru comenzi simple pe
+calculatorul tău, în orice proiect, copiază folderele:
 
 ```bash
 git clone https://github.com/gaflorin-afk/Hyperliquid..git hyperliquid
-cp -r hyperliquid/crypto-* hyperliquid/hl-analyst ~/.claude/skills/
+cp -r hyperliquid/.claude/skills/* ~/.claude/skills/
 ```
 
 Ai nevoie de Python 3.8 sau mai nou. Într-o sesiune Claude în cloud, adaugă

@@ -14,5 +14,5 @@
     "day-trading",
     "backtesting"
   ],
-  "skills": "./"
+  "skills": "./.claude/skills"
 }

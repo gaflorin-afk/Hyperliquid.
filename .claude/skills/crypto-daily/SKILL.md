@@ -76,9 +76,7 @@ Reguli:
 
 ## Când rulează singur
 
-Ca sarcină programată, rulează într-o sesiune unde depozitul poate lipsi și
-`crypto/config.json` (ignorat de git) poate lipsi. Înainte de `top`: clonează
-depozitul dacă lipsește și setează limitele utilizatorului cu `config
-budget=100 max_loss_per_trade_usd=5 max_daily_loss_usd=15 leverage=10
-max_leverage=10` dacă `config` arată altceva. Între 22:00 și 01:00 UTC nu
-există opțiuni noi: spune asta și atât.
+Sarcina programată pornește în fiecare dimineață o sesiune nouă cu acest
+depozit. Limitele utilizatorului sunt în `crypto/config.json`, în depozit.
+Rulează din rădăcina depozitului (`crypto/` e relativ la folderul curent).
+Între 22:00 și 01:00 UTC nu există opțiuni noi: spune asta și atât.

@@ -1,0 +1,30 @@
+{
+  "coins": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "XRP",
+    "DOGE",
+    "BNB",
+    "HYPE",
+    "SUI",
+    "AVAX",
+    "LINK"
+  ],
+  "day_start_utc": "00:00",
+  "or_minutes": 60,
+  "no_entries_after": "22:00",
+  "flat_by": "23:45",
+  "budget": 100,
+  "cash_buffer_pct": 10,
+  "max_loss_per_trade_usd": 5,
+  "max_daily_loss_usd": 15,
+  "max_trades_per_day": 3,
+  "min_reward_risk": 1.0,
+  "leverage": 10,
+  "max_leverage": 10,
+  "max_position_pct": 75,
+  "allow_short": true,
+  "blocked": [],
+  "paper": true
+}
