@@ -29,7 +29,21 @@ pornește de la el.
 | 7 | `/crypto-ticket` | biletul de ordin, cu pașii exacți pe app.hyperliquid.xyz, și jurnalul |
 | 8 | `/crypto-alerts` | s-a atins stopul, ținta sau ora de închidere |
 
-`/crypto-trader` explică tot lanțul. Toți pașii folosesc același motor,
+`/crypto-trader` explică tot lanțul.
+
+### Agentul zilnic: `/crypto-daily`
+
+Face singur pașii 1-6 pe toate monedele și îți arată primele 5 opțiuni de
+ordin, doar cele care trec toate limitele tale, ordonate după scor (media
+R-ului din simulări și din istoricul regulii, înainte de taxe). Monedele care
+au atins deja stopul sau ținta după breakout ies din listă; restul se
+recalculează la prețul de acum.
+
+```bash
+python3 crypto-trader/crypto.py top             # top 5 de acum
+python3 crypto-trader/crypto.py top --pick 1    # opțiunea 1 devine plan + ordin
+python3 crypto-trader/crypto.py risk && python3 crypto-trader/crypto.py ticket
+``` Toți pașii folosesc același motor,
 `crypto-trader/crypto.py`.
 
 ```bash
@@ -43,6 +57,7 @@ python3 crypto-trader/crypto.py budget --write
 python3 crypto-trader/crypto.py risk
 python3 crypto-trader/crypto.py ticket          # placed --index 1 --price P | closed --coin BTC --price P | log
 python3 crypto-trader/crypto.py alerts
+python3 crypto-trader/crypto.py config budget=100 leverage=10   # vezi sau schimbă limitele
 ```
 
 `--now "2026-10-22 01:45"` (UTC, pus înaintea comenzii) fixează ceasul, ca să

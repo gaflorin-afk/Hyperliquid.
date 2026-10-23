@@ -441,6 +441,26 @@ def cmd_entry(a):
             print(f"Wrote {DIR}/entry.json.")
 
 
+def stop_level(rule, coin, side, entry, hi, lo, bar_t, cs=None):
+    """Raw stop price for a rule, and the words that explain it."""
+    long_ = side == "long"
+    if rule == "or-mid":
+        return (hi + lo) / 2, f"opening-range midpoint ({fp(hi, coin)} + {fp(lo, coin)}) / 2"
+    if rule == "or-far":
+        return (lo if long_ else hi), "the far side of the opening range"
+    if rule.startswith("pct:"):
+        k = float(rule[4:]) / 100
+        return entry * (1 - k if long_ else 1 + k), f"{rule[4:]}% from the entry"
+    if rule.startswith("atr:"):
+        k = float(rule[4:])
+        cs = [c for c in (cs or candles(coin, days=2)) if c["t"] <= bar_t]
+        v = atr(cs[-15:])
+        return (entry - k * v if long_ else entry + k * v), f"{k} x ATR14 ({fp(v, coin)}) on 15m bars"
+    if rule.startswith("price:"):
+        return float(rule[6:]), "your price"
+    die("Stop: or-mid, or-far, pct:X, atr:K or price:X.")
+
+
 def cmd_exit(a):
     cfg = config()
     e = load(os.path.join(DIR, "entry.json"))
@@ -450,22 +470,7 @@ def cmd_exit(a):
     long_ = side == "long"
     hi, lo = e["or_high"], e["or_low"]
     rule = a.stop
-    if rule == "or-mid":
-        raw, why = (hi + lo) / 2, f"opening-range midpoint ({fp(hi, coin)} + {fp(lo, coin)}) / 2"
-    elif rule == "or-far":
-        raw, why = (lo if long_ else hi), "the far side of the opening range"
-    elif rule.startswith("pct:"):
-        k = float(rule[4:]) / 100
-        raw, why = entry * (1 - k if long_ else 1 + k), f"{rule[4:]}% from the entry"
-    elif rule.startswith("atr:"):
-        k = float(rule[4:])
-        cs = [c for c in candles(coin, days=2) if c["t"] <= e["bar_t"]]
-        v = atr(cs[-15:])
-        raw, why = entry - k * v if long_ else entry + k * v, f"{k} x ATR14 ({fp(v, coin)}) on 15m bars"
-    elif rule.startswith("price:"):
-        raw, why = float(rule[6:]), "your price"
-    else:
-        die("Stop: or-mid, or-far, pct:X, atr:K or price:X.")
+    raw, why = stop_level(rule, coin, side, entry, hi, lo, e["bar_t"])
     stop = round_px(coin, raw, "down" if long_ else "up")
     if (long_ and stop >= entry) or (not long_ and stop <= entry):
         die(f"Refused: the stop {fp(stop, coin)} is on the wrong side of the entry {fp(entry, coin)}.")
@@ -503,41 +508,33 @@ def cmd_exit(a):
         print(f"Wrote {DIR}/plan.json. Next: tm (Time Machine), then budget.")
 
 
-def cmd_tm(a):
-    cfg = config()
-    p = load(os.path.join(DIR, "plan.json"))
-    if not p:
-        die("No crypto/plan.json. Run exit --write first.")
-    coin, long_ = p["symbol"], p["side"] == "long"
+def tm_core(p, cs, cfg, replays=10000, seed=19, window=2):
+    """Time Machine on a plan: replays from the coin's own 15m bars + the same rule on every past day."""
+    long_ = p["side"] == "long"
     e, s, t, risk, R = p["entry"], p["stop"], p["target"], p["risk"], p["target_r"]
-    cs = candles(coin, days=53)
-    psess = p["session"]
     by = {}
     for c in cs:
         by.setdefault(session_of(c["t"], cfg), []).append(c)
-    full = [k for k, v in sorted(by.items()) if k < psess and len(v) == SLOTS]
+    full = [k for k, v in sorted(by.items()) if k < p["session"] and len(v) == SLOTS]
     if len(full) < 20:
-        die(f"Only {len(full)} full past days of 15m bars: too few for a fair pool (needs 20).")
-    # pool of bar ratios by slot, each relative to the close before it
+        return {"error": f"only {len(full)} full past days of 15m bars (needs 20)"}
     pool = [[] for _ in range(SLOTS)]
     prevc = None
-    series = []
     for k in full:
         for i, c in enumerate(by[k]):
             if prevc is not None:
                 pool[i].append((c["h"] / prevc, c["l"] / prevc, c["c"] / prevc))
             prevc = c["c"]
-        series.append(by[k])
     first = slot_of(p["entry_time"], cfg)
     last = slot_of(p["flat_by_t"], cfg)
     nb = last - first
-    rng = random.Random(a.seed)
+    rng = random.Random(seed)
     res = {"target": 0, "stop": 0, "neither": 0}
     rs, ends = [], []
-    for _ in range(a.replays):
+    for _ in range(replays):
         px, out = e, None
         for k in range(nb):
-            sl = min(SLOTS - 1, max(0, first + k + rng.randint(-a.window, a.window)))
+            sl = min(SLOTS - 1, max(0, first + k + rng.randint(-window, window)))
             rh, rl, rc = rng.choice(pool[sl])
             hi, lo = px * rh, px * rl
             if (lo <= s) if long_ else (hi >= s):
@@ -549,36 +546,15 @@ def cmd_tm(a):
             px *= rc
         out = out or "neither"
         res[out] += 1
-        r = R if out == "target" else -1.0 if out == "stop" else ((px - e) if long_ else (e - px)) / risk
-        rs.append(r)
+        rs.append(R if out == "target" else -1.0 if out == "stop" else ((px - e) if long_ else (e - px)) / risk)
         ends.append(t if out == "target" else s if out == "stop" else px)
-    n = a.replays
     ends.sort()
-    green = sum(1 for r in rs if r > 0)
-    print(f"{coin} {p['side']}, {p['date']}: entry {fp(e, coin)} at {hhmm(p['entry_time'])} UTC, stop {fp(s, coin)},"
-          f" target {fp(t, coin)} ({R:g}R, risk {fp(risk, coin)} = {risk / e * 100:.2f}%).")
-    print(f"{n:,} replays of the rest of the day, {hhmm(p['entry_time'])} to {p['flat_by']} UTC ({nb} bars of 15m),"
-          f" seed {a.seed}.")
-    print(f"Each bar is drawn whole from {coin}'s own 15m bars at the same time of day (+-{a.window} bars)"
-          f" over its last {len(full)} full days ({label(full[0], cfg)[4:]} to {label(full[-1], cfg)[4:]}).")
-    print()
-    print(f"  target first  {res['target'] / n * 100:5.1f} %")
-    print(f"  stop first    {res['stop'] / n * 100:5.1f} %")
-    print(f"  neither       {res['neither'] / n * 100:5.1f} %   still open at {p['flat_by']} UTC")
-    print(f"  green         {green / n * 100:5.1f} %   target first, or in profit at {p['flat_by']}")
-    print(f"  Price at the exit or {p['flat_by']}: median {fp(ends[n // 2], coin)},"
-          f" 90 % between {fp(ends[int(n * .05)], coin)} and {fp(ends[int(n * .95)], coin)}.")
-    print(f"  Average R: {statistics.mean(rs):+.3f} (fees and funding not included)")
-    # history: the same rule on every past day
     h = {"target": 0, "stop": 0, "neither": 0}
     hr = []
-    fired = 0
     for k in full:
-        allc = by[k]
-        r = orb(allc, k, cfg, p["side"])
+        r = orb(by[k], k, cfg, p["side"])
         if r["status"] != "triggered":
             continue
-        fired += 1
         en = r["price"]
         if p["stop_rule"] == "or-mid":
             st = (r["or_high"] + r["or_low"]) / 2
@@ -588,11 +564,10 @@ def cmd_tm(a):
             st = en * (1 - risk / e) if long_ else en * (1 + risk / e)
         rk = abs(en - st)
         if rk <= 0:
-            fired -= 1
             continue
         tg = en + R * rk if long_ else en - R * rk
         out, px = "neither", en
-        for c in allc[r["bar"] + 1:last]:
+        for c in by[k][r["bar"] + 1:last]:
             if (c["l"] <= st) if long_ else (c["h"] >= st):
                 out = "stop"
                 break
@@ -602,32 +577,70 @@ def cmd_tm(a):
             px = c["c"]
         h[out] += 1
         hr.append(R if out == "target" else -1.0 if out == "stop" else ((px - en) if long_ else (en - px)) / rk)
-    print()
-    if fired:
-        print(f"History: the same rule ({p['or_minutes']}-min range from {p['day_start_utc']} UTC, {p['side']} on the"
-              f" first 15m close beyond it, stop {p['stop_rule']}, {R:g}R target) on each of those {len(full)} days"
-              f" fired {fired} times: {h['target']} target, {h['stop']} stop, {h['neither']} neither."
-              f" Average R {statistics.mean(hr):+.3f}.")
-    else:
-        print(f"History: the rule never fired on those {len(full)} days.")
+    n = replays
     hit = res["target"] + res["stop"]
-    if hit:
-        need, got = 100 / (1 + R), res["target"] / hit * 100
+    need = 100 / (1 + R)
+    got = res["target"] / hit * 100 if hit else None
+    verdict = None
+    if got is not None:
         gap = got - need
         if abs(gap) < 5:
-            word = "Close to a coin flip" if abs(R - 1) < 1e-9 else "Close to break-even"
+            verdict = "Close to a coin flip" if abs(R - 1) < 1e-9 else "Close to break-even"
         elif abs(gap) < 15:
-            word = "Leans toward the target" if gap > 0 else "Leans toward the stop"
+            verdict = "Leans toward the target" if gap > 0 else "Leans toward the stop"
         else:
-            word = "Strongly toward the target" if gap > 0 else "Strongly toward the stop"
-        print(f"{word}: target first {res['target'] / n * 100:.1f} % vs stop first {res['stop'] / n * 100:.1f} %"
-              f" (of the replays that hit a side the target came first in {got:.1f} %; {R:g}R breaks even at {need:.1f} %).")
+            verdict = "Strongly toward the target" if gap > 0 else "Strongly toward the stop"
+    return {"n": n, "nb": nb, "days": full, "res": res, "green": sum(1 for r in rs if r > 0),
+            "avg_r": statistics.mean(rs), "median": ends[n // 2], "p5": ends[int(n * .05)],
+            "p95": ends[int(n * .95)], "hist": h, "fired": sum(h.values()),
+            "hist_avg_r": statistics.mean(hr) if hr else None, "need": need, "got": got,
+            "verdict": verdict, "seed": seed, "window": window}
+
+
+def cmd_tm(a):
+    cfg = config()
+    p = load(os.path.join(DIR, "plan.json"))
+    if not p:
+        die("No crypto/plan.json. Run exit --write first.")
+    coin = p["symbol"]
+    e, s, t, risk, R = p["entry"], p["stop"], p["target"], p["risk"], p["target_r"]
+    m = tm_core(p, candles(coin, days=53), cfg, a.replays, a.seed, a.window)
+    if "error" in m:
+        die(f"Refused: {m['error']}.")
+    n, res, full = m["n"], m["res"], m["days"]
+    print(f"{coin} {p['side']}, {p['date']}: entry {fp(e, coin)} at {hhmm(p['entry_time'])} UTC, stop {fp(s, coin)},"
+          f" target {fp(t, coin)} ({R:g}R, risk {fp(risk, coin)} = {risk / e * 100:.2f}%).")
+    print(f"{n:,} replays of the rest of the day, {hhmm(p['entry_time'])} to {p['flat_by']} UTC ({m['nb']} bars of 15m),"
+          f" seed {a.seed}.")
+    print(f"Each bar is drawn whole from {coin}'s own 15m bars at the same time of day (+-{a.window} bars)"
+          f" over its last {len(full)} full days ({label(full[0], cfg)[4:]} to {label(full[-1], cfg)[4:]}).")
+    print()
+    print(f"  target first  {res['target'] / n * 100:5.1f} %")
+    print(f"  stop first    {res['stop'] / n * 100:5.1f} %")
+    print(f"  neither       {res['neither'] / n * 100:5.1f} %   still open at {p['flat_by']} UTC")
+    print(f"  green         {m['green'] / n * 100:5.1f} %   target first, or in profit at {p['flat_by']}")
+    print(f"  Price at the exit or {p['flat_by']}: median {fp(m['median'], coin)},"
+          f" 90 % between {fp(m['p5'], coin)} and {fp(m['p95'], coin)}.")
+    print(f"  Average R: {m['avg_r']:+.3f} (fees and funding not included)")
+    print()
+    h = m["hist"]
+    if m["fired"]:
+        print(f"History: the same rule ({p['or_minutes']}-min range from {p['day_start_utc']} UTC, {p['side']} on the"
+              f" first 15m close beyond it, stop {p['stop_rule']}, {R:g}R target) on each of those {len(full)} days"
+              f" fired {m['fired']} times: {h['target']} target, {h['stop']} stop, {h['neither']} neither."
+              f" Average R {m['hist_avg_r']:+.3f}.")
+    else:
+        print(f"History: the rule never fired on those {len(full)} days.")
+    if m["verdict"]:
+        print(f"{m['verdict']}: target first {res['target'] / n * 100:.1f} % vs stop first {res['stop'] / n * 100:.1f} %"
+              f" (of the replays that hit a side the target came first in {m['got']:.1f} %;"
+              f" {R:g}R breaks even at {m['need']:.1f} %).")
     if res["neither"] / n > 0.4:
         print(f"{res['neither'] / n * 100:.1f} % of the replays hit neither by {p['flat_by']}; the price then decides those.")
     print(f"A simulation from {coin}'s own last {len(full)} days, not a prediction. Same seed, same numbers: --seed {a.seed}.")
     if a.write:
         save(os.path.join(DIR, "timemachine.json"), {"plan": p, "mc": {k: v / n for k, v in res.items()},
-                                                      "avg_r": statistics.mean(rs), "history": h, "seed": a.seed})
+                                                      "avg_r": m["avg_r"], "history": h, "seed": a.seed})
     print("Next: budget sizes it to your max loss and leverage.")
 
 
@@ -723,6 +736,70 @@ def journal():
     return load(os.path.join(STATE, "journal.json"), {"entries": []})
 
 
+def check_order(o, cfg, sess, t0, today, used_loss, open_coins):
+    """Every rule for one order. Returns (reasons, warnings, loss at the stop, reward:risk)."""
+    coin = o["coin"]
+    reasons, warns = [], []
+    long_ = o["side"] == "buy"
+    pl = o.get("plan", {})
+    loss = rr = None
+    if coin not in meta():
+        return ["not a Hyperliquid perp"], warns, loss, rr
+    if o.get("reduce_only"):
+        return reasons, warns, loss, rr
+    if coin not in cfg["coins"]:
+        reasons.append(f"{coin} is not in your coin list")
+    if coin in cfg["blocked"]:
+        reasons.append(f"{coin} is blocked")
+    if not long_ and not cfg["allow_short"]:
+        reasons.append("short selling is off (allow_short false)")
+    st, tg = o.get("stop_loss"), o.get("take_profit")
+    m = mark(coin)
+    en = pl.get("entry", m)
+    if m and ((long_ and m > en) or (not long_ and m < en)):
+        warns.append(f"measured from the current mark {fp(m, coin)}, worse than the plan's {fp(en, coin)}")
+        en = m
+    if st is None:
+        reasons.append("no stop-loss")
+    elif (long_ and st >= en) or (not long_ and st <= en):
+        reasons.append(f"the stop {fp(st, coin)} is on the wrong side of {fp(en, coin)}")
+    else:
+        loss = o["size"] * abs(en - st)
+        rr = abs(tg - en) / abs(en - st) if tg and (tg - en) * (1 if long_ else -1) > 0 else 0
+        if loss > cfg["max_loss_per_trade_usd"] + 1e-9:
+            reasons.append(f"loss: {o['size']:g} x {fp(abs(en - st), coin)} = ${loss:,.2f} at the stop,"
+                           f" over your ${cfg['max_loss_per_trade_usd']} max loss per trade")
+        if rr < cfg["min_reward_risk"]:
+            reasons.append(f"reward:risk {rr:.2f} under your minimum {cfg['min_reward_risk']}")
+        if used_loss + loss > cfg["max_daily_loss_usd"] + 1e-9:
+            reasons.append(f"daily loss: ${used_loss:,.2f} already at risk today + ${loss:,.2f}"
+                           f" > ${cfg['max_daily_loss_usd']}")
+        lq = liq_est("long" if long_ else "short", en, o["leverage"], meta()[coin][1])
+        if lq and ((long_ and lq >= st) or (not long_ and lq <= st)):
+            reasons.append(f"liquidation ~{fp(lq, coin)} comes before the stop")
+    if o["leverage"] > min(cfg["max_leverage"], meta()[coin][1]):
+        reasons.append(f"leverage {o['leverage']}x over your max {cfg['max_leverage']}x")
+    if o["size"] * (en or 0) < 10:
+        reasons.append("under Hyperliquid's $10 minimum")
+    if len(today) >= cfg["max_trades_per_day"]:
+        reasons.append(f"trades: {len(today)} of {cfg['max_trades_per_day']} already today")
+    if coin in open_coins:
+        reasons.append(f"you already have an open {coin} position in the journal")
+    cut = at(sess, cfg["no_entries_after"], cfg)
+    start = session_start(sess, cfg) + cfg["or_minutes"] * 60_000
+    if not (start <= t0 <= cut):
+        reasons.append(f"window: new entries only {hhmm(start)}-{cfg['no_entries_after']} UTC")
+    if pl.get("session") is not None and pl["session"] != sess:
+        reasons.append("the plan is from another day")
+    return reasons, warns, loss, rr
+
+
+def day_state(cfg, sess):
+    entries = journal()["entries"]
+    today = [x for x in entries if x["session"] == sess and x.get("kind") == "entry"]
+    return today, sum(x["max_loss"] for x in today), {x["coin"] for x in entries if x.get("status") == "open"}
+
+
 def cmd_risk(a):
     cfg = config()
     orders = (load(os.path.join(DIR, "orders.json"), {}) or {}).get("orders", [])
@@ -730,85 +807,28 @@ def cmd_risk(a):
         die("No orders in crypto/orders.json. Run budget --write first.")
     t0 = now_ms()
     sess = session_of(t0, cfg)
-    today = [x for x in journal()["entries"] if x["session"] == sess and x.get("kind") == "entry"]
-    used_loss = sum(x["max_loss"] for x in today)
-    open_coins = {x["coin"] for x in journal()["entries"] if x.get("status") == "open"}
+    today, used_loss, open_coins = day_state(cfg, sess)
     verdicts, ok_all = [], True
     for i, o in enumerate(orders, 1):
         coin = o["coin"]
-        reasons, warns = [], []
-        exit_ = o.get("reduce_only")
-        long_ = o["side"] == "buy"
-        pl = o.get("plan", {})
-        if coin not in meta():
-            reasons.append("not a Hyperliquid perp")
-        if not exit_:
-            if coin not in cfg["coins"]:
-                reasons.append(f"{coin} is not in your coin list")
-            if coin in cfg["blocked"]:
-                reasons.append(f"{coin} is blocked")
-            if not long_ and not cfg["allow_short"]:
-                reasons.append("short selling is off (allow_short false)")
-            st, tg = o.get("stop_loss"), o.get("take_profit")
-            if st is None:
-                reasons.append("no stop-loss")
-            m = mark(coin)
-            en = pl.get("entry", m)
-            if m and ((long_ and m > en) or (not long_ and m < en)):
-                warns.append(f"measured from the current mark {fp(m, coin)}, worse than the plan's {fp(en, coin)}")
-                en = m
-            if st is not None:
-                if (long_ and st >= en) or (not long_ and st <= en):
-                    reasons.append(f"the stop {fp(st, coin)} is on the wrong side of {fp(en, coin)}")
-                else:
-                    loss = o["size"] * abs(en - st)
-                    rr = abs(tg - en) / abs(en - st) if tg else 0
-                    if (tg - en) * (1 if long_ else -1) <= 0:
-                        rr = 0
-                    if loss > cfg["max_loss_per_trade_usd"] + 1e-9:
-                        reasons.append(f"loss: {o['size']:g} x {fp(abs(en - st), coin)} = ${loss:,.2f} at the stop,"
-                                       f" over your ${cfg['max_loss_per_trade_usd']} max loss per trade")
-                    if rr < cfg["min_reward_risk"]:
-                        reasons.append(f"reward:risk {rr:.2f} under your minimum {cfg['min_reward_risk']}")
-                    if used_loss + loss > cfg["max_daily_loss_usd"] + 1e-9:
-                        reasons.append(f"daily loss: ${used_loss:,.2f} already at risk today + ${loss:,.2f}"
-                                       f" > ${cfg['max_daily_loss_usd']}")
-                    lq = liq_est("long" if long_ else "short", en, o["leverage"], meta()[coin][1])
-                    if lq and ((long_ and lq >= st) or (not long_ and lq <= st)):
-                        reasons.append(f"liquidation ~{fp(lq, coin)} comes before the stop")
-                    o["_loss"] = loss
-                    o["_rr"] = rr
-            if o["leverage"] > min(cfg["max_leverage"], meta()[coin][1]):
-                reasons.append(f"leverage {o['leverage']}x over your max {cfg['max_leverage']}x")
-            if o["size"] * (en or 0) < 10:
-                reasons.append("under Hyperliquid's $10 minimum")
-            if len(today) >= cfg["max_trades_per_day"]:
-                reasons.append(f"trades: {len(today)} of {cfg['max_trades_per_day']} already today")
-            if coin in open_coins:
-                reasons.append(f"you already have an open {coin} position in the journal")
-            cut = at(sess, cfg["no_entries_after"], cfg)
-            start = session_start(sess, cfg) + cfg["or_minutes"] * 60_000
-            if not (start <= t0 <= cut):
-                reasons.append(f"window: new entries only {hhmm(start)}-{cfg['no_entries_after']} UTC")
-            if pl.get("session") is not None and pl["session"] != sess:
-                reasons.append("the plan is from another day")
+        reasons, warns, loss, rr = check_order(o, cfg, sess, t0, today, used_loss, open_coins)
         status = "BLOCK" if reasons else "PASS"
         ok_all &= not reasons
         verdicts.append({"index": i, "fp": fingerprint(o), "status": status, "reasons": reasons, "session": sess})
-        print(f"{status:<5} #{i} {o['side']} {o['size']:g} {coin} {'(exit)' if exit_ else '(entry)'}"
+        print(f"{status:<5} #{i} {o['side']} {o['size']:g} {coin} {'(exit)' if o.get('reduce_only') else '(entry)'}"
               f" at {o['leverage']:g}x, stop {fp(o['stop_loss'], coin) if o.get('stop_loss') else '-'},"
               f" target {fp(o['take_profit'], coin) if o.get('take_profit') else '-'}")
-        if "_loss" in o:
-            print(f"          max loss ${o['_loss']:,.2f} (limit ${cfg['max_loss_per_trade_usd']}),"
-                  f" reward:risk {o['_rr']:.2f} (min {cfg['min_reward_risk']})")
+        if loss is not None:
+            print(f"          max loss ${loss:,.2f} (limit ${cfg['max_loss_per_trade_usd']}),"
+                  f" reward:risk {rr:.2f} (min {cfg['min_reward_risk']})")
             print(f"          today before this: {len(today)} of {cfg['max_trades_per_day']} trades,"
                   f" ${used_loss:,.2f} of ${cfg['max_daily_loss_usd']} daily loss")
         for w in warns:
             print(f"        ~ {w}")
         for r in reasons:
             print(f"        - {r}")
-        if status == "PASS" and not exit_:
-            used_loss += o.get("_loss", 0)
+        if status == "PASS" and loss:
+            used_loss += loss
     if not a.no_write:
         save(os.path.join(STATE, "risk.json"), {"as_of": t0, "verdicts": verdicts})
     acct = "paper (you type it in yourself)" if cfg["paper"] else "LIVE"
@@ -816,6 +836,148 @@ def cmd_risk(a):
           f" blocked at {utc(t0)}. Account: {acct}.")
     print("A PASS is a rules check, not a recommendation and not your yes.")
     sys.exit(0 if ok_all else 1)
+
+
+def build_option(coin, cs, sess, cfg, t0, rule, R, replays, seed, day):
+    """Steps 1-6 for one coin. Returns (option, None) or (None, why it dropped out)."""
+    r = orb(cs, sess, cfg)
+    if r["status"] != "triggered":
+        return None, r["status"]
+    side, long_ = r["side"], r["side"] == "long"
+    hi, lo = r["or_high"], r["or_low"]
+    raw, _ = stop_level(rule, coin, side, r["price"], hi, lo, r["bar_t"], cs)
+    stop = round_px(coin, raw, "down" if long_ else "up")
+    risk0 = abs(r["price"] - stop)
+    tgt0 = r["price"] + R * risk0 if long_ else r["price"] - R * risk0
+    after = [c for c in cs if session_of(c["t"], cfg) == sess and c["t"] > r["bar_t"]]
+    for c in after:
+        if (c["l"] <= stop) if long_ else (c["h"] >= stop):
+            return None, f"{side} stopped out at {hhmm(c['t'] + BAR)}"
+        if (c["h"] >= tgt0) if long_ else (c["l"] <= tgt0):
+            return None, f"{side} already reached {R:g}R at {hhmm(c['t'] + BAR)}"
+    entry = cs[-1]["c"] if NOW is not None else mark(coin)
+    if (long_ and entry <= stop) or (not long_ and entry >= stop):
+        return None, f"{side}: the price is already past the stop"
+    risk = abs(entry - stop)
+    if risk / entry < 0.0005:
+        return None, f"{side}: stop too tight"
+    target = round_px(coin, entry + R * risk if long_ else entry - R * risk)
+    start = (t0 // BAR) * BAR
+    flat = at(sess, cfg["flat_by"], cfg)
+    if start >= flat:
+        return None, "past the flat-by time"
+    plan = {"symbol": coin, "side": side, "session": sess, "date": label(sess, cfg), "entry": entry,
+            "entry_time": start, "entry_bar_t": r["bar_t"], "trigger_time": r["time"], "trigger_price": r["price"],
+            "late": bool(after), "stop": stop, "stop_rule": rule, "target": target, "target_r": R, "risk": risk,
+            "reward_risk": R, "flat_by": cfg["flat_by"], "flat_by_t": flat, "or_high": hi, "or_low": lo,
+            "or_minutes": cfg["or_minutes"], "day_start_utc": cfg["day_start_utc"]}
+    tm = tm_core(plan, cs, cfg, replays, seed)
+    if "error" in tm:
+        return None, tm["error"]
+    o = size_order(plan, cfg)
+    if o["size"] <= 0 or o["notional"] < 10:
+        return None, "size under Hyperliquid's $10 minimum"
+    order = {"coin": coin, "side": "buy" if long_ else "sell", "size": o["size"], "type": "market",
+             "leverage": o["lev"], "margin": "isolated", "take_profit": target, "stop_loss": stop,
+             "reduce_only": False,
+             "why": f"opening-range breakout {side} on {coin}: {o['size']:g}, bound by {o['binding']}"
+                    f" (${o['max_loss']:,.2f} at the stop)",
+             "plan": {"entry": entry, "stop": stop, "target": target, "risk": risk,
+                      "max_loss": round(o["max_loss"], 2), "liq_est": o["liq"], "session": sess,
+                      "flat_by": cfg["flat_by"], "entry_time": start}}
+    today, used, open_coins = day
+    reasons, _, _, _ = check_order(order, cfg, sess, t0, today, used, open_coins)
+    if reasons:
+        return None, f"{side} blocked: {reasons[0]}"
+    parts = [tm["avg_r"]] + ([tm["hist_avg_r"]] if tm["fired"] >= 10 else [])
+    return {"coin": coin, "plan": plan, "order": order, "size": o, "tm": tm,
+            "score": statistics.mean(parts)}, None
+
+
+def cmd_top(a):
+    cfg = config()
+    t0 = now_ms()
+    sess = session_of(t0, cfg)
+    if a.pick:
+        top = load(os.path.join(DIR, "top.json"))
+        if not top or top.get("session") != sess:
+            die("No ranking from today in crypto/top.json. Run top first.")
+        if not 1 <= a.pick <= len(top["options"]):
+            die(f"Pick 1 to {len(top['options'])}.")
+        op = top["options"][a.pick - 1]
+        p = op["plan"]
+        save(os.path.join(DIR, "entry.json"), {
+            "symbol": p["symbol"], "setup": "orb", "status": "triggered", "side": p["side"],
+            "price": p["trigger_price"], "time": p["trigger_time"], "bar_t": p["entry_bar_t"], "session": sess,
+            "or_high": p["or_high"], "or_low": p["or_low"], "or_minutes": p["or_minutes"],
+            "day_start_utc": p["day_start_utc"]})
+        save(os.path.join(DIR, "plan.json"), p)
+        save(os.path.join(DIR, "orders.json"), {"orders": [op["order"]]})
+        print(f"Option {a.pick} ({p['symbol']} {p['side']}) is now the plan and the proposed order."
+              " Next: risk, then ticket. Nothing was placed.")
+        return
+    orb_end = session_start(sess, cfg) + cfg["or_minutes"] * 60_000
+    if t0 < orb_end:
+        die(f"The opening range closes at {hhmm(orb_end)} UTC. No options before that.")
+    if t0 > at(sess, cfg["no_entries_after"], cfg):
+        die(f"Past {cfg['no_entries_after']} UTC: no new entries today.")
+    day = day_state(cfg, sess)
+    opts, dropped = [], []
+    for coin in cfg["coins"]:
+        if coin not in meta():
+            dropped.append((coin, "not a perp"))
+            continue
+        cs = candles(coin, days=53)
+        o, why = build_option(coin, cs, sess, cfg, t0, a.stop, a.r, a.replays, a.seed, day)
+        (opts.append(o) if o else dropped.append((coin, why)))
+    opts.sort(key=lambda o: -o["score"])
+    best = opts[:a.n]
+    save(os.path.join(DIR, "top.json"), {"session": sess, "as_of": t0, "options": [
+        {"plan": o["plan"], "order": o["order"], "score": o["score"]} for o in best]})
+    print(f"TOP {len(best)} - {label(sess, cfg)} {hhmm(t0)} UTC - budget ${cfg['budget']:,}, {cfg['leverage']}x,"
+          f" max ${cfg['max_loss_per_trade_usd']}/trade, stop {a.stop}, target {a.r:g}R, seed {a.seed}")
+    used, today = day[1], day[0]
+    print(f"Today so far: {len(today)} of {cfg['max_trades_per_day']} trades, ${used:,.2f} of"
+          f" ${cfg['max_daily_loss_usd']} daily loss. {len(cfg['coins'])} coins checked, {len(opts)} passed every step.")
+    for i, o in enumerate(best, 1):
+        p, s, tm, c = o["plan"], o["size"], o["tm"], o["coin"]
+        res, n = tm["res"], tm["n"]
+        late = f", breakout {hhmm(p['trigger_time'])} at {fp(p['trigger_price'], c)}" if p["late"] else ""
+        hist = (f"{tm['fired']} past days: {tm['hist']['target']} target / {tm['hist']['stop']} stop,"
+                f" avg {tm['hist_avg_r']:+.2f}R" if tm["fired"] else "never fired before")
+        print(f"\n#{i} {c} {p['side'].upper()}  score {o['score']:+.2f}R{'  (negative: lost on average)' if o['score'] < 0 else ''}")
+        print(f"   entry ~{fp(p['entry'], c)} (price now{late})  stop {fp(p['stop'], c)}  target {fp(p['target'], c)}")
+        print(f"   {s['size']:g} {c} = ${s['notional']:,.0f} at {s['lev']:g}x, margin ${s['margin']:,.2f},"
+              f" loss at stop ${s['max_loss']:,.2f}, liq ~{fp(s['liq'], c)}")
+        print(f"   replays: target {res['target'] / n * 100:.0f}% / stop {res['stop'] / n * 100:.0f}% /"
+              f" open {res['neither'] / n * 100:.0f}%, avg {tm['avg_r']:+.2f}R. {hist}. {tm['verdict']}.")
+    if not best:
+        print("\nNo coin passed every step today. Not trading is a valid answer.")
+    if dropped:
+        print("\nOut: " + "; ".join(f"{c} ({w})" for c, w in dropped))
+    print("\nScore = average R of the replays and of the same rule on past days, before fees. A rule check and"
+          " a simulation, not a forecast and not advice. To use one: top --pick N, then risk and ticket.")
+
+
+def cmd_config(a):
+    p = os.path.join(DIR, "config.json")
+    raw = load(p, None) or dict(DEFAULTS)
+    for kv in a.pairs:
+        if "=" not in kv:
+            die(f"Use key=value, not {kv}.")
+        k, v = kv.split("=", 1)
+        if k not in DEFAULTS:
+            die(f"Unknown key {k}. Keys: {', '.join(DEFAULTS)}.")
+        try:
+            raw[k] = json.loads(v)
+        except ValueError:
+            raw[k] = v.split(",") if isinstance(DEFAULTS[k], list) else v
+    if a.pairs:
+        save(p, raw)
+    c = dict(DEFAULTS)
+    c.update(raw)
+    for k in DEFAULTS:
+        print(f"  {k}: {c[k]}")
 
 
 def cmd_ticket(a):
@@ -940,6 +1102,12 @@ def main():
     p.add_argument("--index", type=int, default=1); p.add_argument("--price", type=float)
     p.add_argument("--coin")
     sub.add_parser("alerts")
+    p = sub.add_parser("top", help="steps 1-6 on every coin, the best options first")
+    p.add_argument("-n", type=int, default=5); p.add_argument("--stop", default="or-mid")
+    p.add_argument("--r", type=float, default=2.0); p.add_argument("--replays", type=int, default=5000)
+    p.add_argument("--seed", type=int, default=19); p.add_argument("--pick", type=int)
+    p = sub.add_parser("config", help="show, or set key=value ...")
+    p.add_argument("pairs", nargs="*")
     a = ap.parse_args()
     if a.now:
         NOW = int(_dt.datetime.strptime(a.now, "%Y-%m-%d %H:%M").replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
@@ -947,7 +1115,7 @@ def main():
         die(f"coins {a.action} needs symbols, e.g. coins {a.action} BTC ETH")
     {"init": cmd_init, "coins": cmd_coins, "scan": cmd_scan, "entry": cmd_entry, "exit": cmd_exit,
      "tm": cmd_tm, "budget": cmd_budget, "risk": cmd_risk, "ticket": cmd_ticket,
-     "alerts": cmd_alerts}[a.cmd](a)
+     "alerts": cmd_alerts, "top": cmd_top, "config": cmd_config}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,13 @@ python3 "${CLAUDE_SKILL_DIR}/crypto.py" budget --write
 python3 "${CLAUDE_SKILL_DIR}/crypto.py" risk
 python3 "${CLAUDE_SKILL_DIR}/crypto.py" ticket              # placed --index 1 --price P | closed --coin BTC --price P | log
 python3 "${CLAUDE_SKILL_DIR}/crypto.py" alerts
+python3 "${CLAUDE_SKILL_DIR}/crypto.py" top                 # steps 1-6 on every coin, the 5 best options
+python3 "${CLAUDE_SKILL_DIR}/crypto.py" top --pick 2        # option 2 becomes the plan and the order
+python3 "${CLAUDE_SKILL_DIR}/crypto.py" config budget=100 leverage=10   # show or set limits
 ```
+
+`/crypto-daily` is the agent that runs `top` every day and presents the
+five best options in short Romanian.
 
 `--now "2026-10-22 01:45"` (UTC, before the command) pins the clock to replay
 a past day on real data. Everything is written under `crypto/` in the
