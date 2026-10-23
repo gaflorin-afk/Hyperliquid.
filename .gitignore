@@ -1,0 +1,6 @@
+# datele tale de lucru: config, plan, ordine, jurnal
+crypto/
+hl-analyst/watchlist.json
+__pycache__/
+*.pyc
+*.tmp

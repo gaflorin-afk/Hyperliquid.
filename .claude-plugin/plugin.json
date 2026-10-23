@@ -1,0 +1,18 @@
+{
+  "name": "hyperliquid-skills",
+  "description": "Skill-uri Claude pentru day trading crypto pe Hyperliquid: scanner, intrare, ieșire, Time Machine, buget, risc, bilet de ordin și alerte, plus un analist read-only. Nu plasează niciodată ordine.",
+  "version": "1.0.0",
+  "author": {
+    "name": "gaflorin-afk"
+  },
+  "repository": "https://github.com/gaflorin-afk/Hyperliquid.",
+  "keywords": [
+    "claude-code",
+    "claude-skills",
+    "crypto",
+    "hyperliquid",
+    "day-trading",
+    "backtesting"
+  ],
+  "skills": "./"
+}

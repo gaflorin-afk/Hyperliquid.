@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "hyperliquid-skills",
+  "description": "Skill-uri Claude pentru day trading crypto pe Hyperliquid",
+  "owner": {
+    "name": "gaflorin-afk"
+  },
+  "plugins": [
+    {
+      "name": "hyperliquid-skills",
+      "description": "Lanțul de day trading crypto pe Hyperliquid (scanner, intrare, ieșire, Time Machine, buget, risc, bilet, alerte) și un analist read-only. Nu plasează ordine.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
